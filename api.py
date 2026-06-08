@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import uuid
 import shutil
 import subprocess
@@ -240,10 +241,15 @@ def write_job_status(job_id: str, payload: Dict[str, Any]):
     }
     base.update(payload)
 
-    job_status_path(job_id).write_text(
+    path = job_status_path(job_id)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+
+    tmp_path.write_text(
         json.dumps(base, indent=2, ensure_ascii=False),
         encoding="utf-8"
     )
+
+    tmp_path.replace(path)
 
 
 def read_job_status(job_id: str) -> Dict[str, Any]:
@@ -251,8 +257,36 @@ def read_job_status(job_id: str) -> Dict[str, Any]:
     if not path.exists():
         raise HTTPException(status_code=404, detail="Job not found.")
 
-    return json.loads(path.read_text(encoding="utf-8"))
+    last_error = None
 
+    for _ in range(5):
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+            if text:
+                return json.loads(text)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+
+        time.sleep(0.1)
+
+    if last_error:
+        return {
+            "job_id": job_id,
+            "status_url": make_api_url(f"/jobs/{job_id}"),
+            "result_url": make_api_url(f"/jobs/{job_id}/result"),
+            "status": "running",
+            "stage": "status_update",
+            "message": "Job status is being updated. Retry shortly."
+        }
+
+    return {
+        "job_id": job_id,
+        "status_url": make_api_url(f"/jobs/{job_id}"),
+        "result_url": make_api_url(f"/jobs/{job_id}/result"),
+        "status": "running",
+        "stage": "status_update",
+        "message": "Job status is not ready yet."
+    }
 
 def run_generate_job(job_id: str, req_data: Dict[str, Any]):
     job_dir = JOBS_DIR / job_id
